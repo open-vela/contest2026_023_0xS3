@@ -1,0 +1,31 @@
+# VelaOps Sentinel full smoke-test overrides.
+# Base: vendor/espressif/.../esp32s3-eye/configs/openvela/defconfig
+# Keep all board peripherals enabled; disable only the crashing BLE path.
+# CONFIG_ESP32S3_BLE is not set
+# CONFIG_ESP32S3_WIFI_BT_COEXIST is not set
+# 禁用 Wi-Fi 省电模式以解决密集 TCP 操作后驱动失活的问题
+CONFIG_ESP32S3_POWER_SAVE_NONE=y
+# ESP32-S3-EYE_SUB_V1.1 LCD: match Espressif BSP.  The local ST7789 driver
+# patch sends RAMCTRL parameters as two ordered 8-bit values (00 F0).
+CONFIG_LCD_ST7789_INVCOLOR=y
+# CONFIG_LCD_ST7789_BGR is not set
+# CONFIG_LCD_ST7789_DATA_ENDIAN_LITTLE is not set
+CONFIG_FS_TMPFS=y
+CONFIG_CRYPTO_MBEDTLS=y
+CONFIG_LIB_SSH=y
+CONFIG_EXAMPLES_AI_AGENT_VELA=y
+CONFIG_LVX_USE_DEMO_CONTEST2026_023_VELAOPS_SMOKE=y
+CONFIG_LVX_USE_DEMO_CONTEST2026_023_VELAOPS=y
+CONFIG_LIB_ZLIB=y
+CONFIG_LIB_ZLIB_MAX_WBITS=15
+CONFIG_LIB_ZLIB_MAX_MEM_LEVEL=8
+# ESP32-S3's wireless mbedTLS build supplies its own hardware entropy callback
+# backed directly by esp_fill_random().  Do not enable the generic application
+# entropy_alt.c implementation because it exports the same symbol and masks the
+# chip-specific implementation at static-link time.
+# CONFIG_MBEDTLS_ENTROPY_HARDWARE_ALT is not set
+# CONFIG_MBEDTLS_NO_PLATFORM_ENTROPY is not set
+# CONFIG_DEV_URANDOM is not set
+# CONFIG_DEV_URANDOM_ARCH is not set
+CONFIG_SYSTEM_SYSTEM=y
+CONFIG_SYSTEM_POPEN=y

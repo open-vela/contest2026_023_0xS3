@@ -1,7 +1,7 @@
 ############################################################################
-# Contest 2026 team 000 hello app - Make.defs
+# VelaOps Sentinel - Make.defs
 ############################################################################
 
-ifneq ($(CONFIG_LVX_USE_DEMO_CONTEST2026_000_HELLO_APP),)
-CONFIGURED_APPS += $(APPDIR)/packages/demos/contest2026_000_hello_app
+ifneq ($(CONFIG_LVX_USE_DEMO_CONTEST2026_023_VELAOPS_SMOKE)$(CONFIG_LVX_USE_DEMO_CONTEST2026_023_VELAOPS),)
+CONFIGURED_APPS += $(APPDIR)/packages/demos/contest2026_023_hello_app
 endif
