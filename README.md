@@ -2,10 +2,6 @@
 
 VelaOps Sentinel 是一台运行在 ESP32-S3-EYE、openvela 与 `ai_agent` 上的桌面式可信服务器运维 Agent。设备通过受限 Proxy 获取服务器资源证据，由自定义 Skill 和 MiMo 生成结构化诊断；涉及变更时，必须由用户长按实体 BOOT 键批准，执行后再独立复核服务状态。
 
-## 选题方向
-
-AI 硬件产品创新。
-
 项目把服务器巡检、AI 分析、物理授权、白名单修复和结果复核收敛到一块常驻桌面的硬件上，面向小团队、个人开发者、家庭实验室和高校实验室。
 
 ## 核心能力
@@ -46,17 +42,6 @@ Linux 演示服务 / 端口 / 内存 / 磁盘
 有线稳定、无需 WiFi；按需可切回局域网 HTTP + HMAC。设备密钥、Wi-Fi 密码和 MiMo API Key
 仅保存在本地私密配置中，不提交到 Git。
 
-## 赛道要求对应
-
-| 要求 | 本项目实现 |
-| --- | --- |
-| openvela + ai_agent 真机运行 | ESP32-S3-EYE 完成 LLM、Tool 和 LCD 真机闭环 |
-| 至少一种交互 Channel | ai_agent 文件 ask 队列 Channel（`/tmp/vela-ask.txt`）；主机 Debug GUI 提供联调入口 |
-| 自定义 Skill | `app/hello_app/skills/server-incident-response.md`（英文，含结构化输出契约） |
-| 主动触发场景 | 后台资源巡检触发去抖后的异常/恢复事件，自动注入 LLM 诊断 |
-| 工具执行场景 | 只读取证、LCD 弹窗、实体批准后的白名单服务修复 |
-| 队伍仓边界 | 作品代码、补丁、文档和日志均位于本队仓库 |
-
 ## 目录结构
 
 ```text
@@ -64,7 +49,6 @@ app/hello_app/        设备端 VelaOps 应用、Tool Provider、LCD 与主机�
 proxy/                HMAC Proxy、白名单 Action、审计与测试
 patches/              openvela 公共目录所需的可复现补丁
 docs/                 架构、协议、接手说明和唯一 Demo Runbook
-logs/                 官方采集器导出的 AI Coding JSONL 日志
 contest2026_023_0xS3.xml
                       repo linkfile 映射
 ```
@@ -95,7 +79,7 @@ esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 \
 
 ## Demo 启动
 
-1. 在队伍目录准备本地私密环境文件 `.velaops.local.env`（含 MiMo API Key 等），不要提交。
+1. 在项目目录准备本地私密环境文件 `.velaops.local.env`（含 MiMo API Key 等），不要提交。
 2. 启动主机侧服务：VelaOps Proxy、MiMo 转发器、局域网 NTP、演示目标
    （`docs/tools/install_demo_services.sh`）。
 3. 启动串口 relay：`PORT=/dev/ttyACM0 python3 docs/tools/serial_llm_relay.py`
@@ -132,12 +116,6 @@ python3 -m py_compile docs/tools/debug_event_gui.py docs/tools/llm_forwarder.py
 - `docs/handover.md`
 - `docs/AI_AGENT_TRACK_CHECKLIST.md`
 - `docs/PROTOCOL_V1.md`
-
-## AI Coding 使用说明
-
-本项目在需求拆解、架构设计、HMAC 协议、状态机、Proxy 测试、ESP32-S3 真机调试、Wi-Fi 稳定性和文档整理中使用 AI Coding 工具辅助开发。所有提交日志均由组委会提供的采集器导出并通过官方 `validate-log.py` 校验。
-
-可提交的 AI Coding 对话记录位于 `logs/hanbingniao/`，内容为组委会采集器导出的原始 JSONL，并已通过官方校验。
 
 ## 安全边界
 
