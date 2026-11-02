@@ -15,14 +15,23 @@ VelaOps 是运行在 ESP32-S3（N16R8）与 openvela 上的桌面式服务器哨
 
 ```text
 app/velaops/                 # VelaOps 业务代码，manifest 映射到 apps/examples/velaops
+patches/nuttx/               # ESP32-S3-EYE 板级与公共改动补丁
+patches/apps/                # libssh2 与 mbedTLS 适配补丁
+docs/BUILD.md                # 构建与烧录说明
 logs/                        # AI Coding 日志，原样保留
 archive/2026-09-20/          # 旧版 ai_agent + Proxy 实现、旧文档与补丁
 contest2026_023_0xS3.xml     # repo linkfile 映射
 ```
 
-## 说明
+## 构建
 
-本仓本次提交的是业务代码层。板级适配（ILI9341、四键、LED/蜂鸣器、MTD、配网）和公共仓补丁仍在开发分支，尚未并入本仓；构建时需要对应的板级支持。
+```bash
+bash contest2026_023_0xS3/docs/tools/apply_contest_patches.sh
+export PATH="$PWD/prebuilts/gcc/linux-x86_64/xtensa-esp32s3-elf/bin:$PATH"
+./build.sh boards/xtensa/esp32s3/esp32s3-eye/configs/ai_agent
+```
+
+板级与依赖补丁在 `patches/nuttx`、`patches/apps`，详见 `docs/BUILD.md`。
 
 ## 安全边界
 
