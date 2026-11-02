@@ -25,3 +25,10 @@ app/hello_app/tests/test_*
 !app/hello_app/tests/test_*.py
 app/hello_app/*.o
 app/hello_app/**/*.o
+
+# VelaOps app build artifacts
+app/velaops/*.o
+app/velaops/**/*.o
+app/velaops/.built
+app/velaops/.depend
+app/velaops/Make.dep

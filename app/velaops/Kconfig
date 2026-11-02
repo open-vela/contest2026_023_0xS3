@@ -1,0 +1,27 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_VELAOPS
+	bool "VelaOps device dashboard"
+	default n
+	depends on LCD_DEV
+	---help---
+		VelaOps server sentinel dashboard (320x240 landscape).
+
+if EXAMPLES_VELAOPS
+
+config EXAMPLES_VELAOPS_PROGNAME
+	string "Program name"
+	default "velaops"
+
+config EXAMPLES_VELAOPS_PRIORITY
+	int "Task priority"
+	default 100
+
+config EXAMPLES_VELAOPS_STACKSIZE
+	int "Task stack size"
+	default 16384
+
+endif
