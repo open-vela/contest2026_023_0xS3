@@ -1,0 +1,10 @@
+############################################################################
+# apps/examples/velaops/Make.defs
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+############################################################################
+
+ifneq ($(CONFIG_EXAMPLES_VELAOPS),)
+CONFIGURED_APPS += $(APPDIR)/examples/velaops
+endif
