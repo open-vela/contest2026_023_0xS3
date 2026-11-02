@@ -1,0 +1,1372 @@
+diff --git a/arch/xtensa/src/common/xtensa_createstack.c b/arch/xtensa/src/common/xtensa_createstack.c
+index db4fa7b0f3e..5d5354c6d6e 100644
+--- a/arch/xtensa/src/common/xtensa_createstack.c
++++ b/arch/xtensa/src/common/xtensa_createstack.c
+@@ -119,18 +119,10 @@ int up_create_stack(struct tcb_s *tcb, size_t stack_size, int ttype)
+        */
+ 
+        tcb->stack_alloc_ptr =
+-#ifdef CONFIG_XTENSA_IMEM_USE_SEPARATE_HEAP
+-#  ifdef CONFIG_TLS_ALIGNED
+-          xtensa_imm_memalign(TLS_STACK_ALIGN, stack_size);
+-#  else
+-          xtensa_imm_malloc(stack_size);
+-#  endif
+-#else
+-#  ifdef CONFIG_TLS_ALIGNED
++#ifdef CONFIG_TLS_ALIGNED
+           group_memalign(tcb->group, TLS_STACK_ALIGN, stack_size);
+-#  else
++#else
+           group_malloc(tcb->group, stack_size);
+-#  endif
+ #endif
+ 
+ #ifdef CONFIG_DEBUG_FEATURES
+diff --git a/arch/xtensa/src/esp32s3/esp32s3_wifi_adapter.c b/arch/xtensa/src/esp32s3/esp32s3_wifi_adapter.c
+index ce697ab4df5..68f376a3844 100644
+--- a/arch/xtensa/src/esp32s3/esp32s3_wifi_adapter.c
++++ b/arch/xtensa/src/esp32s3/esp32s3_wifi_adapter.c
+@@ -52,6 +52,7 @@
+ #include <nuttx/arch.h>
+ #include <nuttx/wireless/wireless.h>
+ #include <nuttx/tls.h>
++#include <syslog.h>
+ 
+ #include "xtensa.h"
+ #include "esp_attr.h"
+@@ -402,6 +403,7 @@ static wifi_txdone_cb_t g_softap_txdone_cb;
+ /* Wi-Fi interface configuration */
+ 
+ static wifi_config_t g_softap_wifi_cfg;
++static wifi_rxcb_t g_softap_rxcb;
+ 
+ #endif /* ESP32S3_WLAN_HAS_SOFTAP */
+ 
+@@ -2139,6 +2141,13 @@ static void esp_evt_work_cb(void *arg)
+ 
+             g_sta_connected = false;
+ 
++            /* Never sleep the station: with modem sleep this port misses
++             * beacons and drops the link right after connecting
++             * (disconnect reasons 204/205).
++             */
++
++            ps_type = WIFI_PS_NONE;
++
+ #ifdef CONFIG_ESP32S3_BLE
+             if (esp32s3_bt_controller_get_status() !=
+                 ESP_BT_CONTROLLER_STATUS_IDLE)
+@@ -2180,7 +2189,14 @@ static void esp_evt_work_cb(void *arg)
+             break;
+ 
+           case WIFI_ADPT_EVT_STA_DISCONNECT:
+-            wlinfo("Wi-Fi sta disconnect\n");
++            {
++              FAR wifi_event_sta_disconnected_t *disc =
++                (FAR wifi_event_sta_disconnected_t *)evt_adpt->buf;
++
++              syslog(LOG_ERR, "[wlan] sta disc reason=%d rssi=%d\n",
++                     (int)disc->reason, (int)disc->rssi);
++            }
++
+             g_sta_connected = false;
+             ret = esp32s3_wlan_sta_set_linkstatus(false);
+             if (ret < 0)
+@@ -2242,11 +2258,11 @@ static void esp_evt_work_cb(void *arg)
+             break;
+ 
+           case WIFI_ADPT_EVT_AP_STACONNECTED:
+-            wlinfo("INFO: Wi-Fi station join\n");
++            syslog(LOG_ERR, "[wlan] STA JOIN\n");
+             break;
+ 
+           case WIFI_ADPT_EVT_AP_STADISCONNECTED:
+-            wlinfo("INFO: Wi-Fi station leave\n");
++            syslog(LOG_ERR, "[wlan] STA LEAVE\n");
+             break;
+ #endif /* ESP32S3_WLAN_HAS_SOFTAP */
+           default:
+@@ -4962,9 +4978,15 @@ int esp_wifi_sta_password(struct iwreq *iwr, bool set)
+       if (ext->alg != IW_ENCODE_ALG_NONE)
+         {
+           memcpy(wifi_cfg.sta.password, pdata, len);
++          wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
++        }
++      else
++        {
++          wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+         }
+ 
+-      wifi_cfg.sta.pmf_cfg.capable = true;
++      wifi_cfg.sta.pmf_cfg.capable = false;
++      wifi_cfg.sta.pmf_cfg.required = false;
+       wifi_cfg.sta.listen_interval = DEFAULT_LISTEN_INTERVAL;
+ 
+       if (g_sta_connected)
+@@ -5104,7 +5126,7 @@ int esp_wifi_sta_essid(struct iwreq *iwr, bool set)
+       memset(wifi_cfg.sta.ssid, 0x0, SSID_MAX_LEN);
+       memcpy(wifi_cfg.sta.ssid, pdata, len);
+       memset(wifi_cfg.sta.sae_h2e_identifier, 0x0, SAE_H2E_IDENTIFIER_LEN);
+-      wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
++      wifi_cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_UNSPECIFIED;
+ 
+       if (g_sta_connected)
+         {
+@@ -6010,6 +6032,65 @@ int esp_wifi_softap_start(void)
+ 
+   g_softap_started = true;
+ 
++  ret = esp_wifi_get_config(WIFI_IF_AP, &g_softap_wifi_cfg);
++  if (ret == 0)
++    {
++      FAR wifi_ap_config_t *ap = &g_softap_wifi_cfg.ap;
++      bool changed = false;
++
++      if (ap->channel == 0)
++        {
++          ap->channel = 1;
++          changed = true;
++        }
++
++      if (ap->max_connection == 0)
++        {
++          ap->max_connection = 4;
++          changed = true;
++        }
++
++      if (ap->beacon_interval == 0)
++        {
++          ap->beacon_interval = 100;
++          changed = true;
++        }
++
++      if (ap->dtim_period == 0)
++        {
++          ap->dtim_period = 2;
++          changed = true;
++        }
++
++      if (ap->pmf_cfg.required || ap->pmf_cfg.capable)
++        {
++          ap->pmf_cfg.required = false;
++          ap->pmf_cfg.capable  = false;
++          changed = true;
++        }
++
++      if (changed)
++        {
++          esp_wifi_set_config(WIFI_IF_AP, &g_softap_wifi_cfg);
++        }
++
++      syslog(LOG_ERR,
++             "[wlan] apcfg ssid=%s chan=%d maxc=%d bcn=%d dtim=%d auth=%d pmf=%d/%d fix=%d\n",
++             ap->ssid, ap->channel, ap->max_connection, ap->beacon_interval,
++             ap->dtim_period, ap->authmode, ap->pmf_cfg.capable,
++             ap->pmf_cfg.required, changed);
++    }
++
++  if (g_softap_rxcb != NULL)
++    {
++      ret = esp_wifi_internal_reg_rxcb(ESP_IF_WIFI_AP, g_softap_rxcb);
++      syslog(LOG_ERR, "[wlan] softap rxcb re-register ret=%d\n", ret);
++      ret = OK;
++    }
++
++  esp32s3_wlan_softap_set_linkstatus(true);
++  syslog(LOG_ERR, "[wlan] softap carrier on\n");
++
+   wlinfo("OK to start Wi-Fi SoftAP\n");
+ 
+ errout:
+@@ -6046,6 +6127,9 @@ int esp_wifi_softap_stop(void)
+ 
+   g_softap_started = false;
+ 
++  esp32s3_wlan_softap_set_linkstatus(false);
++  syslog(LOG_ERR, "[wlan] softap carrier off\n");
++
+ #ifdef ESP32S3_WLAN_HAS_STA
+   if (g_sta_started)
+     {
+@@ -6096,9 +6180,17 @@ errout:
+ int esp_wifi_softap_send_data(void *pbuf, size_t len)
+ {
+   int ret;
++  static int dbg_tx;
+ 
+   ret = esp_wifi_internal_tx(WIFI_IF_AP, pbuf, len);
+ 
++  if (ret != 0 || dbg_tx < 20)
++    {
++      syslog(LOG_ERR, "[wlan] APTX len=%u ret=%d n=%d\n",
++             (unsigned)len, ret, dbg_tx);
++    }
++
++  dbg_tx++;
+   return wifi_errno_trans(ret);
+ }
+ 
+@@ -6123,6 +6215,8 @@ int esp_wifi_softap_register_recv_cb(int (*recv_cb)(void *buffer,
+ {
+   int ret;
+ 
++  g_softap_rxcb = (wifi_rxcb_t)recv_cb;
++
+   ret = esp_wifi_internal_reg_rxcb(ESP_IF_WIFI_AP, (wifi_rxcb_t)recv_cb);
+ 
+   return wifi_errno_trans(ret);
+@@ -6310,6 +6404,12 @@ int esp_wifi_softap_essid(struct iwreq *iwr, bool set)
+             }
+         }
+ 
++      syslog(LOG_ERR,
++             "[wlan] apssid %s len=%d chan=%d maxc=%d auth=%d bcn=%d\n",
++             wifi_cfg.ap.ssid, len, wifi_cfg.ap.channel,
++             wifi_cfg.ap.max_connection, wifi_cfg.ap.authmode,
++             wifi_cfg.ap.beacon_interval);
++
+       g_softap_wifi_cfg = wifi_cfg;
+     }
+   else
+diff --git a/arch/xtensa/src/esp32s3/esp32s3_wlan.c b/arch/xtensa/src/esp32s3/esp32s3_wlan.c
+index d7c0578d0b8..48cea1421b8 100644
+--- a/arch/xtensa/src/esp32s3/esp32s3_wlan.c
++++ b/arch/xtensa/src/esp32s3/esp32s3_wlan.c
+@@ -678,6 +678,32 @@ static void wlan_rxpoll(void *arg)
+       dev->d_buf = pktbuf->buffer;
+       dev->d_len = pktbuf->len;
+ 
++      {
++        static int dhcp_dbg;
++
++        if (dhcp_dbg < 12 && dev->d_len > 42)
++          {
++            uint8_t *eh = dev->d_buf;
++
++            if (eh[12] == 0x08 && eh[13] == 0x00 && eh[23] == 17)
++              {
++                uint8_t *ip = eh + 14;
++                uint16_t sport = (ip[20] << 8) | ip[21];
++                uint16_t dport = (ip[22] << 8) | ip[23];
++
++                if (sport == 67 || dport == 68 || sport == 68 ||
++                    dport == 67)
++                  {
++                    syslog(LOG_ERR,
++                           "[wlan] dhcp pkt sport=%u dport=%u len=%d\n",
++                           (unsigned)sport, (unsigned)dport,
++                           (int)dev->d_len);
++                    dhcp_dbg++;
++                  }
++              }
++          }
++      }
++
+ #ifdef WLAN_RX_THRESHOLD
+       rbytes += pktbuf->len;
+ #endif
+@@ -1579,6 +1605,13 @@ static void wlan_sta_tx_done(uint8_t *data, uint16_t *len, bool status)
+ static int wlan_softap_rx_done(void *buffer, uint16_t len, void *eb)
+ {
+   struct wlan_priv_s *priv = &g_wlan_priv[ESP32S3_WLAN_SOFTAP_DEVNO];
++  static int dbg_rx;
++
++  if (dbg_rx < 30)
++    {
++      syslog(LOG_ERR, "[wlan] APRX len=%u n=%d\n", (unsigned)len, dbg_rx);
++      dbg_rx++;
++    }
+ 
+   return wlan_rx_done(priv, buffer, len, eb);
+ }
+@@ -1604,6 +1637,13 @@ static int wlan_softap_rx_done(void *buffer, uint16_t len, void *eb)
+ static void wlan_softap_tx_done(uint8_t *data, uint16_t *len, bool status)
+ {
+   struct wlan_priv_s *priv = &g_wlan_priv[ESP32S3_WLAN_SOFTAP_DEVNO];
++  static int dbg_tx;
++
++  if (dbg_tx < 20)
++    {
++      syslog(LOG_ERR, "[wlan] APTXDONE st=%d n=%d\n", (int)status, dbg_tx);
++      dbg_tx++;
++    }
+ 
+   wlan_tx_done(priv);
+ }
+@@ -1646,6 +1686,38 @@ int esp32s3_wlan_sta_set_linkstatus(bool linkstatus)
+   return OK;
+ }
+ 
++/****************************************************************************
++ * Name: esp32s3_wlan_softap_set_linkstatus
++ *
++ * Description:
++ *   Set Wi-Fi SoftAP link status
++ *
++ * Parameters:
++ *   linkstatus - true Notifies the networking layer about an available
++ *                carrier, false Notifies the networking layer about a
++ *                disappeared carrier.
++ *
++ * Returned Value:
++ *   OK on success; Negated errno on failure.
++ *
++ ****************************************************************************/
++
++int esp32s3_wlan_softap_set_linkstatus(bool linkstatus)
++{
++  struct wlan_priv_s *priv = &g_wlan_priv[ESP32S3_WLAN_SOFTAP_DEVNO];
++
++  if (linkstatus)
++    {
++      netdev_carrier_on(&priv->dev);
++    }
++  else
++    {
++      netdev_carrier_off(&priv->dev);
++    }
++
++  return OK;
++}
++
+ /****************************************************************************
+  * Name: esp32s3_wlan_sta_initialize
+  *
+diff --git a/arch/xtensa/src/esp32s3/esp32s3_wlan.h b/arch/xtensa/src/esp32s3/esp32s3_wlan.h
+index a522a602e59..84fb44a4cc4 100644
+--- a/arch/xtensa/src/esp32s3/esp32s3_wlan.h
++++ b/arch/xtensa/src/esp32s3/esp32s3_wlan.h
+@@ -98,6 +98,7 @@ int esp32s3_wlan_sta_initialize(void);
+  ****************************************************************************/
+ 
+ #ifdef ESP32S3_WLAN_HAS_SOFTAP
++int esp32s3_wlan_softap_set_linkstatus(bool linkstatus);
+ int esp32s3_wlan_softap_initialize(void);
+ #endif /* ESP32S3_WLAN_HAS_SOFTAP */
+ 
+diff --git a/boards/xtensa/esp32s3/common/src/esp32s3_board_spiflash.c b/boards/xtensa/esp32s3/common/src/esp32s3_board_spiflash.c
+index 3801258c0c4..456738e7f99 100644
+--- a/boards/xtensa/esp32s3/common/src/esp32s3_board_spiflash.c
++++ b/boards/xtensa/esp32s3/common/src/esp32s3_board_spiflash.c
+@@ -47,6 +47,14 @@
+ #include "esp32s3_spiflash.h"
+ #include "esp32s3_spiflash_mtd.h"
+ 
++#ifndef CONFIG_ESP32S3_STORAGE_MTD_OFFSET
++#  define CONFIG_ESP32S3_STORAGE_MTD_OFFSET 0x180000
++#endif
++
++#ifndef CONFIG_ESP32S3_STORAGE_MTD_SIZE
++#  define CONFIG_ESP32S3_STORAGE_MTD_SIZE 0x100000
++#endif
++
+ /****************************************************************************
+  * Pre-processor Definitions
+  ****************************************************************************/
+@@ -283,7 +291,16 @@ static int init_storage_partition(void)
+       return ERROR;
+     }
+ 
+-#if defined (CONFIG_ESP32S3_SPIFLASH_SMARTFS)
++#if defined(CONFIG_EXAMPLES_VELAOPS)
++
++  ret = register_mtddriver("/dev/esp32s3flash", mtd, 0755, NULL);
++  if (ret < 0)
++    {
++      syslog(LOG_ERR, "ERROR: Failed to register MTD: %d\n", ret);
++      return ret;
++    }
++
++#elif defined (CONFIG_ESP32S3_SPIFLASH_SMARTFS)
+ 
+   ret = setup_smartfs(0, mtd, "/data");
+   if (ret < 0)
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/Kconfig b/boards/xtensa/esp32s3/esp32s3-eye/Kconfig
+index fbd7c0268a8..3b1b634ce4b 100644
+--- a/boards/xtensa/esp32s3/esp32s3-eye/Kconfig
++++ b/boards/xtensa/esp32s3/esp32s3-eye/Kconfig
+@@ -16,4 +16,33 @@ config ESP32S3_EYE_LCD
+ 	---help---
+ 		Enable board LCD support, IC is LCD_ST7789V.
+ 
++config ESP32S3_EYE_LCD_ILI9341
++	bool "Enable ILI9341 LCD (MSP2402 2.4in)"
++	default n
++	select ESP32S3_SPI2
++	select LCD
++	select LCD_DEV
++	select LCD_ILI9341
++	select LCD_ILI9341_IFACE0
++	---help---
++		Enable ILI9341 240x320 4-wire SPI panel support. The default pin
++		assignment matches CS=10, DC=8, RST=9, MOSI=11, SCK=12, MISO=13.
++
++config ESP32S3_EYE_ILI9341_DC
++	int "ILI9341 D/C pin"
++	depends on ESP32S3_EYE_LCD_ILI9341
++	default 8
++	range 0 48
++
++config ESP32S3_EYE_ILI9341_RESET
++	int "ILI9341 reset pin"
++	depends on ESP32S3_EYE_LCD_ILI9341
++	default 9
++	range 0 48
++
++config ESP32S3_EYE_ILI9341_FREQUENCY
++	int "ILI9341 SPI frequency"
++	depends on ESP32S3_EYE_LCD_ILI9341
++	default 20000000
++
+ endif # ARCH_BOARD_ESP32S3_EYE
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/configs/ai_agent/defconfig b/boards/xtensa/esp32s3/esp32s3-eye/configs/ai_agent/defconfig
+new file mode 100644
+index 00000000000..237b4446127
+--- /dev/null
++++ b/boards/xtensa/esp32s3/esp32s3-eye/configs/ai_agent/defconfig
+@@ -0,0 +1,196 @@
++#
++# This file is autogenerated: PLEASE DO NOT EDIT IT.
++#
++# You can use "make menuconfig" to make any modifications to the installed .config file.
++# You can then do "make savedefconfig" to generate a new defconfig file that includes your
++# modifications.
++#
++# CONFIG_AI_AGENT_FEISHU is not set
++# CONFIG_AI_AGENT_MCP is not set
++# CONFIG_AI_AGENT_MQTT is not set
++# CONFIG_AI_AGENT_NODE is not set
++# CONFIG_AI_AGENT_WEIXIN is not set
++# CONFIG_ARCH_LEDS is not set
++# CONFIG_MBEDTLS_ARIA_C is not set
++# CONFIG_MBEDTLS_CCM_C is not set
++# CONFIG_NDEBUG is not set
++# CONFIG_NSH_ARGCAT is not set
++# CONFIG_NSH_CMDOPT_HEXDUMP is not set
++CONFIG_ALLOW_BSD_COMPONENTS=y
++CONFIG_ARCH="xtensa"
++CONFIG_ARCH_BOARD="esp32s3-eye"
++CONFIG_ARCH_BOARD_COMMON=y
++CONFIG_ARCH_BOARD_ESP32S3_EYE=y
++CONFIG_ARCH_CHIP="esp32s3"
++CONFIG_ARCH_CHIP_ESP32S3=y
++CONFIG_ARCH_CHIP_ESP32S3WROOM1N16R8=y
++CONFIG_ARCH_INTERRUPTSTACK=2048
++CONFIG_ARCH_STACKDUMP=y
++CONFIG_ARCH_XTENSA=y
++CONFIG_BOARD_LOOPSPERMSEC=16717
++CONFIG_BUILTIN=y
++CONFIG_CRYPTO_MBEDTLS=y
++CONFIG_DEFAULT_TASK_STACKSIZE=4096
++CONFIG_DRIVERS_IEEE80211=y
++CONFIG_DRIVERS_VIDEO=y
++CONFIG_DRIVERS_WIRELESS=y
++# CONFIG_ESP32S3_EYE_LCD is not set
++CONFIG_ESP32S3_SPIRAM=y
++CONFIG_ESP32S3_SPIRAM_MODE_OCT=y
++CONFIG_ESP32S3_WIFI=y
++CONFIG_EXAMPLES_AI_AGENT_VELA=y
++CONFIG_FS_PROCFS=y
++CONFIG_FS_TMPFS=y
++CONFIG_IDLETHREAD_STACKSIZE=3072
++CONFIG_INIT_ENTRYPOINT="nsh_main"
++CONFIG_INTELHEX_BINARY=y
++CONFIG_IOB_NBUFFERS=124
++CONFIG_IOB_THROTTLE=24
++# CONFIG_LCD_FRAMEBUFFER is not set
++CONFIG_LCD_PORTRAIT=y
++# CONFIG_LCD_ST7789_BGR is not set
++CONFIG_LCD_ST7789_FREQUENCY=40000000
++# CONFIG_LCD_ST7789_YRES is not set
++CONFIG_LINE_MAX=64
++CONFIG_MM_REGIONS=2
++CONFIG_NAME_MAX=48
++CONFIG_NETDB_DNSCLIENT=y
++CONFIG_NETDB_DNSCLIENT_NAMESERVER1="114.114.114.114"
++CONFIG_NETDEV_LATEINIT=y
++CONFIG_NETDEV_PHY_IOCTL=y
++CONFIG_NETDEV_WIRELESS_IOCTL=y
++CONFIG_NETUTILS_CJSON=y
++CONFIG_NET_BROADCAST=y
++CONFIG_NET_ETH_PKTSIZE=1514
++CONFIG_NET_ICMP_SOCKET=y
++CONFIG_NET_TCP=y
++CONFIG_NET_TCP_DELAYED_ACK=y
++CONFIG_NET_TCP_WRITE_BUFFERS=y
++CONFIG_NET_UDP=y
++CONFIG_NET_UDP_WRITE_BUFFERS=y
++CONFIG_NSH_ARCHINIT=y
++CONFIG_NSH_BUILTIN_APPS=y
++CONFIG_NSH_FILEIOSIZE=512
++CONFIG_NSH_READLINE=y
++CONFIG_PIPES=y
++CONFIG_POSIX_SPAWN_DEFAULT_STACKSIZE=2048
++CONFIG_PREALLOC_TIMERS=4
++CONFIG_PTHREAD_MUTEX_TYPES=y
++CONFIG_RAM_SIZE=114688
++CONFIG_RAM_START=0x20000000
++CONFIG_RR_INTERVAL=200
++CONFIG_SCHED_LPWORK=y
++CONFIG_SIG_DEFAULT=y
++CONFIG_START_DAY=6
++CONFIG_START_MONTH=12
++CONFIG_START_YEAR=2011
++CONFIG_SYSLOG_BUFFER=y
++CONFIG_SYSTEM_DHCPC_RENEW=y
++CONFIG_SYSTEM_NSH=y
++CONFIG_SYSTEM_PING=y
++CONFIG_SYSTEM_POPEN=y
++CONFIG_SYSTEM_SYSTEM=y
++CONFIG_TIMER=y
++CONFIG_TLS_TASK_NELEM=4
++CONFIG_VIDEO=y
++# CONFIG_VIDEO_FB is not set
++CONFIG_WIRELESS=y
++CONFIG_WIRELESS_WAPI=y
++CONFIG_WIRELESS_WAPI_CMDTOOL=y
++CONFIG_WIRELESS_WAPI_INITCONF=y
++CONFIG_WIRELESS_WAPI_STACKSIZE=8192
++CONFIG_ESP32S3_UART0=y
++CONFIG_UART0_SERIAL_CONSOLE=y
++CONFIG_SYSLOG_DEVPATH="/dev/ttyS0"
++CONFIG_LIBC_SEM_MUTEX_NOINLINE=y
++CONFIG_NETUTILS_LIBSSH2=y
++CONFIG_EXAMPLES_SSH_EXEC=y
++CONFIG_EXAMPLES_SSH_EXEC_PROGNAME="ssh_exec"
++CONFIG_EXAMPLES_SSH_EXEC_PRIORITY=100
++CONFIG_EXAMPLES_SSH_EXEC_STACKSIZE=24576
++CONFIG_EXAMPLES_SCP_PUT=y
++CONFIG_EXAMPLES_SCP_PUT_PROGNAME="scp_put"
++CONFIG_EXAMPLES_SCP_PUT_PRIORITY=100
++CONFIG_EXAMPLES_SCP_PUT_STACKSIZE=24576
++CONFIG_NSH_LINELEN=512
++CONFIG_NSH_MAXARGUMENTS=16
++CONFIG_XTENSA_IMEM_USE_SEPARATE_HEAP=y
++CONFIG_XTENSA_IMEM_REGION_SIZE=0x20000
++CONFIG_ARCH_HAVE_EXTRA_HEAPS=y
++CONFIG_EXAMPLES_SFTP_PUT=y
++CONFIG_EXAMPLES_SFTP_PUT_PROGNAME="sftp_put"
++CONFIG_EXAMPLES_SFTP_PUT_PRIORITY=100
++CONFIG_EXAMPLES_SFTP_PUT_STACKSIZE=24576
++CONFIG_ESP32S3_EYE_LCD_ILI9341=y
++CONFIG_ESP32S3_EYE_ILI9341_DC=8
++CONFIG_ESP32S3_EYE_ILI9341_RESET=9
++CONFIG_ESP32S3_EYE_ILI9341_FREQUENCY=20000000
++CONFIG_LCD=y
++CONFIG_LCD_DEV=y
++CONFIG_LCD_ILI9341=y
++CONFIG_LCD_ILI9341_NINTERFACES=1
++CONFIG_LCD_ILI9341_IFACE0=y
++# CONFIG_LCD_ILI9341_IFACE0_LANDSCAPE is not set
++CONFIG_LCD_ILI9341_IFACE0_RLANDSCAPE=y
++CONFIG_LCD_ILI9341_IFACE0_RGB565=y
++CONFIG_SPI=y
++CONFIG_ESP32S3_SPI=y
++CONFIG_ESP32S3_SPI2=y
++CONFIG_ESP32S3_SPI2_CLKPIN=12
++CONFIG_ESP32S3_SPI2_MOSIPIN=11
++CONFIG_ESP32S3_SPI2_MISOPIN=13
++CONFIG_ESP32S3_SPI2_CSPIN=10
++CONFIG_EXAMPLES_LCDTEST=y
++CONFIG_EXAMPLES_LCDTEST_PROGNAME="lcdtest"
++CONFIG_EXAMPLES_LCDTEST_PRIORITY=100
++CONFIG_EXAMPLES_LCDTEST_STACKSIZE=4096
++CONFIG_ESP32S3_SPI2_IO2PIN=15
++CONFIG_ESP32S3_SPI2_IO3PIN=16
++CONFIG_ESP32S3_SPI_IO_SPI=y
++# CONFIG_ESP32S3_SPI_IO_QIO is not set
++CONFIG_DEV_GPIO=y
++CONFIG_ESP32S3_GPIO_IRQ=y
++CONFIG_DEV_GPIO_NPOLLWAITERS=1
++CONFIG_DEV_GPIO_NSIGNALS=1
++CONFIG_ESP32S3_SPIFLASH=y
++CONFIG_ESP32S3_MTD=y
++CONFIG_MTD=y
++CONFIG_MTD_BYTE_WRITE=y
++CONFIG_MTD_PARTITION=y
++CONFIG_ESP32S3_SPIFLASH_LITTLEFS=y
++CONFIG_FS_LITTLEFS=y
++CONFIG_ESP32S3_STORAGE_MTD_OFFSET=0x180000
++CONFIG_ESP32S3_STORAGE_MTD_SIZE=0x100000
++CONFIG_ESP32S3_SPIFLASH_MTD_BLKSIZE=256
++CONFIG_FTL_USLEEP=0
++CONFIG_ESP32S3_SPIFLASH_OP_TASK_STACKSIZE=2048
++CONFIG_FS_LITTLEFS_PROGRAM_SIZE_FACTOR=4
++CONFIG_FS_LITTLEFS_READ_SIZE_FACTOR=4
++CONFIG_FS_LITTLEFS_BLOCK_SIZE_FACTOR=1
++CONFIG_FS_LITTLEFS_CACHE_SIZE_FACTOR=4
++CONFIG_FS_LITTLEFS_LOOKAHEAD_SIZE=16
++CONFIG_FS_LITTLEFS_BLOCK_CYCLE=200
++CONFIG_FS_LITTLEFS_NAME_MAX=255
++CONFIG_FS_LITTLEFS_FILE_MAX=2147483647
++CONFIG_FS_LITTLEFS_ATTR_MAX=255
++CONFIG_ESP32S3_WIFI_STATION_SOFTAP=y
++CONFIG_NETUTILS_DHCPD=y
++CONFIG_NETUTILS_DHCPD_STARTIP=0xc0a80402
++CONFIG_NETUTILS_DHCPD_ROUTERIP=0xc0a80401
++CONFIG_NETUTILS_DHCPD_NETMASK=0xffffff00
++CONFIG_NETUTILS_DHCPD_DNSIP=0
++CONFIG_NETUTILS_DHCPD_PRIORITY=100
++CONFIG_NETUTILS_DHCPD_STACKSIZE=2048
++CONFIG_NETUTILS_DHCPD_SIGWAKEUP=22
++CONFIG_EXAMPLES_VELAOPS=y
++CONFIG_EXAMPLES_VELAOPS_PROGNAME="velaops"
++CONFIG_EXAMPLES_VELAOPS_PRIORITY=100
++CONFIG_EXAMPLES_VELAOPS_STACKSIZE=8192
++
++CONFIG_NET_TCPBACKLOG=y
++CONFIG_NET_TCPBACKLOG_CONNS=8
++CONFIG_BOARDCTL_RESET=y
++CONFIG_ESP32S3_SPI_FLASH_SUPPORT_PSRAM_STACK=y
++CONFIG_MBEDTLS_PLATFORM_MEMORY=y
++CONFIG_NET_ROUTE=y
++CONFIG_ROUTE_IPv4_RAMROUTE=y
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/src/Make.defs b/boards/xtensa/esp32s3/esp32s3-eye/src/Make.defs
+index 832028b52b9..1fb553755e0 100644
+--- a/boards/xtensa/esp32s3/esp32s3-eye/src/Make.defs
++++ b/boards/xtensa/esp32s3/esp32s3-eye/src/Make.defs
+@@ -43,10 +43,14 @@ ifeq ($(CONFIG_ESP32S3_SPI),y)
+ CSRCS += esp32s3_board_spi.c
+ endif
+ 
+-ifeq ($(CONFIG_ESP32S3_EYE_LCD),y)
++ifneq ($(CONFIG_ESP32S3_EYE_LCD)$(CONFIG_ESP32S3_EYE_LCD_ILI9341),)
+ CSRCS += esp32s3_board_lcd.c
+ endif
+ 
++ifeq ($(CONFIG_ESP32S3_EYE_LCD_ILI9341),y)
++CSRCS += esp32s3_board_ili9341.c
++endif
++
+ DEPPATH += --dep-path board
+ VPATH += :board
+ CFLAGS += ${INCDIR_PREFIX}$(TOPDIR)$(DELIM)arch$(DELIM)$(CONFIG_ARCH)$(DELIM)src$(DELIM)board$(DELIM)board
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_appinit.c b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_appinit.c
+index c582f0959c1..ffdfaa291f5 100644
+--- a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_appinit.c
++++ b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_appinit.c
+@@ -27,9 +27,20 @@
+ #include <nuttx/config.h>
+ 
+ #include <sys/types.h>
++#include <stdio.h>
++#include <sys/ioctl.h>
++#include <fcntl.h>
++#include <pthread.h>
++#include <unistd.h>
++#include <stdlib.h>
++
+ #include <nuttx/board.h>
++#include <nuttx/ioexpander/gpio.h>
++
++#include <arch/board/board.h>
+ 
+ #include "esp32s3-eye.h"
++#include "esp32s3_gpio.h"
+ 
+ #ifdef CONFIG_BOARDCTL
+ 
+@@ -37,6 +48,86 @@
+  * Pre-processor Definitions
+  ****************************************************************************/
+ 
++/****************************************************************************
++ * Private Functions
++ ****************************************************************************/
++
++#ifdef CONFIG_EXAMPLES_VELAOPS
++#define VELAOPS_SETUP_GPIO 6
++
++static bool velaops_boot_button_held(int samples)
++{
++  bool value = true;
++  bool held = false;
++  int low_run = 0;
++  int fd;
++  int i;
++
++  esp32s3_configgpio(VELAOPS_SETUP_GPIO, INPUT_FUNCTION_2 | PULLUP);
++
++  fd = open("/dev/gpio1", O_RDONLY);
++
++  for (i = 0; i < samples; i++)
++    {
++      bool low = false;
++
++      if (fd >= 0)
++        {
++          value = true;
++          ioctl(fd, GPIOC_READ, (unsigned long)(uintptr_t)&value);
++
++          if (!value)
++            {
++              low = true;
++            }
++        }
++
++      if (!esp32s3_gpioread(VELAOPS_SETUP_GPIO))
++        {
++          low = true;
++        }
++
++      if (low)
++        {
++          low_run++;
++
++          if (low_run >= 2)
++            {
++              held = true;
++            }
++        }
++      else
++        {
++          low_run = 0;
++        }
++
++      usleep(200000);
++    }
++
++  if (fd >= 0)
++    {
++      close(fd);
++    }
++
++  return held;
++}
++
++static FAR void *velaops_boot_thread(FAR void *arg)
++{
++  if (velaops_boot_button_held(30))
++    {
++      printf("velaops: BOOT/OK held at startup, enter setup mode\n");
++      system("velaops boot setup");
++    }
++  else
++    {
++      system("velaops boot");
++    }
++
++  return NULL;
++}
++#endif
++
+ /****************************************************************************
+  * Public Functions
+  ****************************************************************************/
+@@ -75,7 +166,25 @@ int board_app_initialize(uintptr_t arg)
+ #else
+   /* Perform board-specific initialization */
+ 
+-  return esp32s3_bringup();
++  int ret = esp32s3_bringup();
++
++#ifdef CONFIG_EXAMPLES_VELAOPS
++  if (ret == 0)
++    {
++      pthread_t tid;
++      pthread_attr_t attr;
++
++      pthread_attr_init(&attr);
++      pthread_attr_setstacksize(&attr, 8192);
++
++      if (pthread_create(&tid, &attr, velaops_boot_thread, NULL) == 0)
++        {
++          pthread_detach(tid);
++        }
++    }
++#endif
++
++  return ret;
+ #endif
+ }
+ 
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_ili9341.c b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_ili9341.c
+new file mode 100644
+index 00000000000..6236f5623f3
+--- /dev/null
++++ b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_ili9341.c
+@@ -0,0 +1,266 @@
++/****************************************************************************
++ * boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_ili9341.c
++ *
++ * ILI9341 (MSP2402 2.4" 240x320) 4-wire SPI panel for the N16R8 board.
++ *
++ * Wiring:
++ *   CS=GPIO10  DC=GPIO8  RST=GPIO9  MOSI=GPIO11  SCK=GPIO12  MISO=GPIO13
++ *   Backlight is tied to 3V3 on the module (always on).
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ ****************************************************************************/
++
++/****************************************************************************
++ * Included Files
++ ****************************************************************************/
++
++#include <nuttx/config.h>
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <debug.h>
++#include <errno.h>
++
++#include <nuttx/arch.h>
++#include <nuttx/spi/spi.h>
++#include <nuttx/lcd/lcd.h>
++#include <nuttx/lcd/ili9341.h>
++
++#include <arch/board/board.h>
++
++#include "esp32s3_gpio.h"
++#include "esp32s3_spi.h"
++
++#ifdef CONFIG_ESP32S3_EYE_LCD_ILI9341
++
++/****************************************************************************
++ * Pre-processor Definitions
++ ****************************************************************************/
++
++#ifndef CONFIG_ESP32S3_EYE_ILI9341_DC
++#  define CONFIG_ESP32S3_EYE_ILI9341_DC 8
++#endif
++
++#ifndef CONFIG_ESP32S3_EYE_ILI9341_RESET
++#  define CONFIG_ESP32S3_EYE_ILI9341_RESET 9
++#endif
++
++#ifndef CONFIG_ESP32S3_EYE_ILI9341_FREQUENCY
++#  define CONFIG_ESP32S3_EYE_ILI9341_FREQUENCY 20000000
++#endif
++
++#define LCD_DC   CONFIG_ESP32S3_EYE_ILI9341_DC
++#define LCD_RST  CONFIG_ESP32S3_EYE_ILI9341_RESET
++#define LCD_FREQ CONFIG_ESP32S3_EYE_ILI9341_FREQUENCY
++
++#define LCD_SWAP_CHUNK 256
++
++/****************************************************************************
++ * Private Types
++ ****************************************************************************/
++
++struct lcd_init_cmd
++{
++  uint8_t cmd;
++  uint8_t len;
++  uint8_t data[15];
++};
++
++/****************************************************************************
++ * Private Data
++ ****************************************************************************/
++
++static FAR struct spi_dev_s *g_spi;
++static struct ili9341_lcd_s g_lcd;
++
++/* Panel power/timing/gamma settings from the LCDWIKI MSP2402 reference.
++ * MADCTL and pixel format are configured by the generic driver already.
++ */
++
++static const struct lcd_init_cmd g_panel_init[] =
++{
++  { 0xcf, 3, { 0x00, 0x81, 0x30 } },
++  { 0xed, 4, { 0x64, 0x03, 0x12, 0x81 } },
++  { 0xe8, 3, { 0x85, 0x10, 0x78 } },
++  { 0xcb, 5, { 0x39, 0x2c, 0x00, 0x34, 0x02 } },
++  { 0xf7, 1, { 0x20 } },
++  { 0xea, 2, { 0x00, 0x00 } },
++  { 0xc0, 1, { 0x21 } },
++  { 0xc1, 1, { 0x11 } },
++  { 0xc5, 2, { 0x3f, 0x3c } },
++  { 0xc7, 1, { 0xb5 } },
++  { 0xb1, 2, { 0x00, 0x1b } },
++  { 0x26, 1, { 0x01 } },
++  { 0xe0, 15, { 0x0f, 0x26, 0x24, 0x0b, 0x0e, 0x09, 0x54, 0xa8,
++                0x46, 0x0c, 0x17, 0x09, 0x0f, 0x07, 0x00 } },
++  { 0xe1, 15, { 0x00, 0x19, 0x1b, 0x04, 0x10, 0x07, 0x2a, 0x47,
++                0x39, 0x03, 0x06, 0x06, 0x30, 0x38, 0x0f } },
++};
++
++/****************************************************************************
++ * Private Functions
++ ****************************************************************************/
++
++static inline void lcd_dc(bool data)
++{
++  esp32s3_gpiowrite(LCD_DC, data);
++}
++
++static void lcd_select(FAR struct ili9341_lcd_s *lcd)
++{
++  SPI_LOCK(g_spi, true);
++  SPI_SELECT(g_spi, SPIDEV_DISPLAY(0), true);
++  SPI_SETMODE(g_spi, SPIDEV_MODE0);
++  SPI_SETBITS(g_spi, 8);
++  SPI_SETFREQUENCY(g_spi, LCD_FREQ);
++}
++
++static void lcd_deselect(FAR struct ili9341_lcd_s *lcd)
++{
++  SPI_SELECT(g_spi, SPIDEV_DISPLAY(0), false);
++  SPI_LOCK(g_spi, false);
++}
++
++static int lcd_sendcmd(FAR struct ili9341_lcd_s *lcd, const uint8_t cmd)
++{
++  lcd_dc(false);
++  SPI_SEND(g_spi, cmd);
++  return OK;
++}
++
++static int lcd_sendparam(FAR struct ili9341_lcd_s *lcd, const uint8_t param)
++{
++  lcd_dc(true);
++  SPI_SEND(g_spi, param);
++  return OK;
++}
++
++static int lcd_recvparam(FAR struct ili9341_lcd_s *lcd, FAR uint8_t *param)
++{
++  lcd_dc(true);
++  *param = (uint8_t)SPI_SEND(g_spi, 0xff);
++  return OK;
++}
++
++static int lcd_sendgram(FAR struct ili9341_lcd_s *lcd,
++                        FAR const uint16_t *wd, uint32_t nwords)
++{
++  static uint16_t swap[LCD_SWAP_CHUNK];
++  uint32_t n;
++  uint32_t i;
++
++  lcd_dc(true);
++
++  while (nwords > 0)
++    {
++      n = nwords > LCD_SWAP_CHUNK ? LCD_SWAP_CHUNK : nwords;
++      for (i = 0; i < n; i++)
++        {
++          swap[i] = (uint16_t)((wd[i] >> 8) | (wd[i] << 8));
++        }
++
++      SPI_SNDBLOCK(g_spi, swap, n * 2);
++
++      wd     += n;
++      nwords -= n;
++    }
++
++  return OK;
++}
++
++static int lcd_recvgram(FAR struct ili9341_lcd_s *lcd,
++                        FAR uint16_t *wd, uint32_t nwords)
++{
++  uint32_t i;
++
++  lcd_dc(true);
++  SPI_RECVBLOCK(g_spi, wd, nwords * 2);
++
++  for (i = 0; i < nwords; i++)
++    {
++      wd[i] = (uint16_t)((wd[i] >> 8) | (wd[i] << 8));
++    }
++
++  return OK;
++}
++
++static int lcd_backlight(FAR struct ili9341_lcd_s *lcd, int level)
++{
++  return OK;
++}
++
++/****************************************************************************
++ * Public Functions
++ ****************************************************************************/
++
++/****************************************************************************
++ * Name: esp32s3_ili9341_lcdinitialize
++ *
++ * Description:
++ *   Initialize the ILI9341 panel on the board SPI bus and return the NuttX
++ *   lcd_dev_s instance.
++ *
++ ****************************************************************************/
++
++FAR struct lcd_dev_s *esp32s3_ili9341_lcdinitialize(
++    FAR struct spi_dev_s *spi)
++{
++  FAR struct lcd_dev_s *dev;
++  const struct lcd_init_cmd *c;
++  size_t i;
++  uint8_t n;
++
++  g_spi = spi;
++
++  g_lcd.select    = lcd_select;
++  g_lcd.deselect  = lcd_deselect;
++  g_lcd.sendcmd   = lcd_sendcmd;
++  g_lcd.sendparam = lcd_sendparam;
++  g_lcd.recvparam = lcd_recvparam;
++  g_lcd.sendgram  = lcd_sendgram;
++  g_lcd.recvgram  = lcd_recvgram;
++  g_lcd.backlight = lcd_backlight;
++
++  esp32s3_configgpio(LCD_DC, OUTPUT);
++  esp32s3_configgpio(LCD_RST, OUTPUT);
++
++  /* Hardware reset */
++
++  esp32s3_gpiowrite(LCD_RST, true);
++  up_mdelay(10);
++  esp32s3_gpiowrite(LCD_RST, false);
++  up_mdelay(20);
++  esp32s3_gpiowrite(LCD_RST, true);
++  up_mdelay(120);
++
++  dev = ili9341_initialize(&g_lcd, 0);
++  if (dev == NULL)
++    {
++      lcderr("ERROR: ili9341_initialize() failed\n");
++      return NULL;
++    }
++
++  /* Apply the panel specific power/timing/gamma table */
++
++  lcd_select(&g_lcd);
++  for (i = 0; i < sizeof(g_panel_init) / sizeof(g_panel_init[0]); i++)
++    {
++      c = &g_panel_init[i];
++      lcd_sendcmd(&g_lcd, c->cmd);
++      for (n = 0; n < c->len; n++)
++        {
++          lcd_sendparam(&g_lcd, c->data[n]);
++        }
++    }
++
++  lcd_deselect(&g_lcd);
++
++  /* Turn the display on */
++
++  dev->setpower(dev, 1);
++
++  lcdinfo("ILI9341 initialized\n");
++  return dev;
++}
++
++#endif /* CONFIG_ESP32S3_EYE_LCD_ILI9341 */
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_lcd.c b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_lcd.c
+index cb622d0b987..cc22b8b835f 100644
+--- a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_lcd.c
++++ b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_board_lcd.c
+@@ -57,6 +57,11 @@
+ static struct spi_dev_s *g_spidev;
+ static struct lcd_dev_s *g_lcd;
+ 
++#ifdef CONFIG_ESP32S3_EYE_LCD_ILI9341
++FAR struct lcd_dev_s *esp32s3_ili9341_lcdinitialize(
++    FAR struct spi_dev_s *spi);
++#endif
++
+ /****************************************************************************
+  * Public Functions
+  ****************************************************************************/
+@@ -76,6 +81,22 @@ static struct lcd_dev_s *g_lcd;
+ 
+ int board_lcd_initialize(void)
+ {
++  g_spidev = esp32s3_spibus_initialize(ESP32S3_EYE_DISPLAY_SPI);
++  if (!g_spidev)
++    {
++      lcderr("ERROR: Failed to initialize SPI port %d\n",
++             ESP32S3_EYE_DISPLAY_SPI);
++      return -ENODEV;
++    }
++
++#ifdef CONFIG_ESP32S3_EYE_LCD_ILI9341
++  g_lcd = esp32s3_ili9341_lcdinitialize(g_spidev);
++  if (!g_lcd)
++    {
++      lcderr("ERROR: esp32s3_ili9341_lcdinitialize() failed\n");
++      return -ENODEV;
++    }
++#else
+   /* Initialize non-SPI GPIOs */
+ 
+   esp32s3_configgpio(ESP32S3_EYE_DISPLAY_DC, OUTPUT);
+@@ -85,20 +106,13 @@ int board_lcd_initialize(void)
+ 
+   esp32s3_gpiowrite(ESP32S3_EYE_DISPLAY_BCKL, false);
+ 
+-  g_spidev = esp32s3_spibus_initialize(ESP32S3_EYE_DISPLAY_SPI);
+-  if (!g_spidev)
+-    {
+-      lcderr("ERROR: Failed to initialize SPI port %d\n",
+-             ESP32S3_EYE_DISPLAY_SPI);
+-      return -ENODEV;
+-    }
+-
+   g_lcd = st7789_lcdinitialize(g_spidev);
+   if (!g_lcd)
+     {
+       lcderr("ERROR: st7789_lcdinitialize() failed\n");
+       return -ENODEV;
+     }
++#endif
+ 
+   return OK;
+ }
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_boot.c b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_boot.c
+index 02b185f766d..6e89832af4c 100644
+--- a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_boot.c
++++ b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_boot.c
+@@ -26,6 +26,11 @@
+ 
+ #include <nuttx/config.h>
+ 
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <pthread.h>
++
+ #include <debug.h>
+ 
+ #include <nuttx/board.h>
+@@ -42,6 +47,19 @@
+  * Private Functions
+  ****************************************************************************/
+ 
++/****************************************************************************
++ * Private Functions
++ ****************************************************************************/
++
++#ifdef CONFIG_EXAMPLES_VELAOPS
++static FAR void *velaops_boot_thread(FAR void *arg)
++{
++  sleep(6);
++  system("velaops boot");
++  return NULL;
++}
++#endif
++
+ /****************************************************************************
+  * Public Functions
+  ****************************************************************************/
+@@ -81,5 +99,20 @@ void board_late_initialize(void)
+   /* Perform board-specific initialization */
+ 
+   esp32s3_bringup();
++
++#ifdef CONFIG_EXAMPLES_VELAOPS
++  {
++    pthread_t tid;
++    pthread_attr_t attr;
++
++    pthread_attr_init(&attr);
++    pthread_attr_setstacksize(&attr, 8192);
++
++    if (pthread_create(&tid, &attr, velaops_boot_thread, NULL) == 0)
++      {
++        pthread_detach(tid);
++      }
++  }
++#endif
+ }
+ #endif
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_bringup.c b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_bringup.c
+index 22a13db52a7..af49b8c5b61 100644
+--- a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_bringup.c
++++ b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_bringup.c
+@@ -128,6 +128,7 @@ int esp32s3_bringup(void)
+       syslog(LOG_ERR, "ERROR: Failed to mount tmpfs at %s: %d\n",
+              CONFIG_LIBC_TMPDIR, ret);
+     }
++
+ #endif
+ 
+ #ifdef CONFIG_ESP32S3_TIMER
+@@ -223,7 +224,7 @@ int esp32s3_bringup(void)
+     }
+ #endif
+ 
+-#ifdef CONFIG_ESP32S3_EYE_LCD
++#if defined(CONFIG_ESP32S3_EYE_LCD) || defined(CONFIG_ESP32S3_EYE_LCD_ILI9341)
+ 
+ #ifdef CONFIG_VIDEO_FB
+   ret = fb_register(0, 0);
+diff --git a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_gpio.c b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_gpio.c
+index 477ba25229a..81894c172c5 100644
+--- a/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_gpio.c
++++ b/boards/xtensa/esp32s3/esp32s3-eye/src/esp32s3_gpio.c
+@@ -27,6 +27,7 @@
+ #include <nuttx/config.h>
+ 
+ #include <sys/types.h>
++#include <unistd.h>
+ #include <nuttx/irq.h>
+ #include <arch/irq.h>
+ #include <assert.h>
+@@ -384,4 +385,82 @@ int esp32s3_gpio_init(void)
+ 
+   return OK;
+ }
++
++/****************************************************************************
++ * Hardware self-test helpers
++ *
++ * The four keys, the status LED and the buzzer are driven directly.  On
++ * this board each extra /dev/gpio device registration disturbs the Wi-Fi
++ * data path (EAPOL exchange times out), so these pins must stay out of the
++ * generic GPIO driver.
++ ****************************************************************************/
++
++#define HWTEST_KEY_NUM     4
++#define HWTEST_LED_PIN     17
++#define HWTEST_BUZZER_PIN  16
++
++static const uint32_t g_hwtest_keys[HWTEST_KEY_NUM] =
++{
++  4, 5, 6, 7
++};
++
++static bool g_hwtest_ready;
++
++int board_hwtest_gpio_init(void)
++{
++  int i;
++
++  for (i = 0; i < HWTEST_KEY_NUM; i++)
++    {
++      esp32s3_configgpio(g_hwtest_keys[i], INPUT_FUNCTION_2 | PULLUP);
++    }
++
++  esp32s3_gpio_matrix_out(HWTEST_LED_PIN, SIG_GPIO_OUT_IDX, 0, 0);
++  esp32s3_configgpio(HWTEST_LED_PIN,
++                     OUTPUT_FUNCTION_2 | INPUT_FUNCTION_2);
++  esp32s3_gpiowrite(HWTEST_LED_PIN, false);
++
++  esp32s3_gpio_matrix_out(HWTEST_BUZZER_PIN, SIG_GPIO_OUT_IDX, 0, 0);
++  esp32s3_configgpio(HWTEST_BUZZER_PIN,
++                     OUTPUT_FUNCTION_2 | INPUT_FUNCTION_2);
++  esp32s3_gpiowrite(HWTEST_BUZZER_PIN, false);
++
++  g_hwtest_ready = true;
++  return OK;
++}
++
++int board_hwtest_gpio_read(int id)
++{
++  if (!g_hwtest_ready || id < 0 || id >= HWTEST_KEY_NUM)
++    {
++      return 1;
++    }
++
++  return esp32s3_gpioread(g_hwtest_keys[id]) ? 1 : 0;
++}
++
++void board_hwtest_gpio_write(int id, int value)
++{
++  if (!g_hwtest_ready)
++    {
++      return;
++    }
++
++  esp32s3_gpiowrite(id == 0 ? HWTEST_LED_PIN : HWTEST_BUZZER_PIN,
++                    value != 0);
++}
++
++void board_hwtest_key_drive(int id, int ms)
++{
++  if (!g_hwtest_ready || id < 0 || id >= HWTEST_KEY_NUM || ms <= 0)
++    {
++      return;
++    }
++
++  esp32s3_configgpio(g_hwtest_keys[id], OUTPUT_FUNCTION_2);
++  esp32s3_gpiowrite(g_hwtest_keys[id], false);
++  usleep((useconds_t)ms * 1000);
++  esp32s3_configgpio(g_hwtest_keys[id], INPUT_FUNCTION_2 | PULLUP);
++}
++
+ #endif /* CONFIG_DEV_GPIO && !CONFIG_GPIO_LOWER_HALF */
+diff --git a/drivers/lcd/ili9341.c b/drivers/lcd/ili9341.c
+index bc3a1d7e09a..09650f7d788 100644
+--- a/drivers/lcd/ili9341.c
++++ b/drivers/lcd/ili9341.c
+@@ -403,6 +403,10 @@ static inline uint16_t ili9341_getyres(FAR struct ili9341_dev_s *dev);
+ static int ili9341_putrun(FAR struct lcd_dev_s *dev, fb_coord_t row,
+                           fb_coord_t col,
+                           FAR const uint8_t * buffer, size_t npixels);
++static int ili9341_putarea(FAR struct lcd_dev_s *dev,
++                           fb_coord_t row_start, fb_coord_t row_end,
++                           fb_coord_t col_start, fb_coord_t col_end,
++                           FAR const uint8_t * buffer, fb_coord_t stride);
+ #ifndef CONFIG_LCD_NOGETRUN
+ static int ili9341_getrun(FAR struct lcd_dev_s *dev, fb_coord_t row,
+                           fb_coord_t col, FAR uint8_t * buffer,
+@@ -616,6 +620,59 @@ static int ili9341_putrun(FAR struct lcd_dev_s *lcd_dev, fb_coord_t row,
+   return OK;
+ }
+ 
++/****************************************************************************
++ * Name:  ili9341_putarea
++ *
++ * Description:
++ *   Write a partial area to the LCD in one memory-write burst.
++ *
++ ****************************************************************************/
++
++static int ili9341_putarea(FAR struct lcd_dev_s *lcd_dev,
++                           fb_coord_t row_start, fb_coord_t row_end,
++                           fb_coord_t col_start, fb_coord_t col_end,
++                           FAR const uint8_t *buffer, fb_coord_t stride)
++{
++  FAR struct ili9341_dev_s *dev = (FAR struct ili9341_dev_s *)lcd_dev;
++  FAR struct ili9341_lcd_s *lcd = dev->lcd;
++  FAR const uint16_t *src = (FAR const uint16_t *)buffer;
++  size_t cols = col_end - col_start + 1;
++  size_t rows = row_end - row_start + 1;
++  size_t row_size = cols * sizeof(uint16_t);
++  size_t r;
++
++  DEBUGASSERT(buffer && ((uintptr_t)buffer & 1) == 0);
++
++  if (col_end >= ili9341_getxres(dev) || row_end >= ili9341_getyres(dev))
++    {
++      return -EINVAL;
++    }
++
++  lcd->select(lcd);
++
++  ili9341_selectarea(lcd, col_start, row_start, col_end, row_end);
++
++  lcd->sendcmd(lcd, ILI9341_MEMORY_WRITE);
++
++  if ((size_t)stride == row_size)
++    {
++      lcd->sendgram(lcd, src, rows * cols);
++    }
++  else
++    {
++      for (r = 0; r < rows; r++)
++        {
++          lcd->sendgram(lcd, src, cols);
++          src = (FAR const uint16_t *)
++                ((FAR const uint8_t *)src + stride);
++        }
++    }
++
++  lcd->deselect(lcd);
++
++  return OK;
++}
++
+ /****************************************************************************
+  * Name:  ili9341_getrun
+  *
+@@ -842,6 +899,7 @@ static int ili9341_getplaneinfo(FAR struct lcd_dev_s *dev,
+       FAR struct ili9341_dev_s *priv = (FAR struct ili9341_dev_s *)dev;
+ 
+       pinfo->putrun = ili9341_putrun;
++      pinfo->putarea = ili9341_putarea;
+ #ifndef CONFIG_LCD_NOGETRUN
+       pinfo->getrun = ili9341_getrun;
+ #endif
